@@ -1,9 +1,11 @@
 # espo2redrose
 Connector between EspoCRM and RedRose.
 
+Developed in support to the [Ukraine crisis 2022](https://go.ifrc.org/emergencies/5854).
+
 ## Description
 
-Synopsis: a dockerized python app that connects EspoCRM and RedRose.
+Synopsis: a [dockerized](https://www.docker.com/) [python app](https://www.python.org/) that connects EspoCRM and RedRose.
 
 Worflow: push new entities from EspoCRM to RedRose.
 
