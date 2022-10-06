@@ -1,8 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Get a submission with a specific ID from kobo and upload it to espocrm via the API
-
-The script takes exactly 1 argument, which is the kObO ID of the submission
+Connector between EspoCRM and RedRose
 """
 import pandas as pd
 from pipeline.espo_api_client import EspoAPI
