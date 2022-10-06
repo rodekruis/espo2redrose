@@ -48,20 +48,16 @@ class RedRoseAPI:
         self.module = module
         self.status_code = None
 
-    def request(self, method, action, params=None):
-        if params is None:
-            params = {}
+    def request(self, method, action, params=None, files=None):
 
         kwargs = {
             'url': self.normalize_url(action),
             'auth': (self.api_user, self.api_key),
         }
 
-        files = [('keyValuePair', ('keyValuePair', json.dumps(params), 'application/json'))]
-
-        if method in ['POST', 'PATCH', 'PUT']:
-            kwargs['files'] = files
-        else:
+        if files is not None:
+            kwargs['files'] = [('keyValuePair', ('keyValuePair', json.dumps(files), 'application/json'))]
+        if params is not None:
             kwargs['url'] = kwargs['url'] + '?' + http_build_query(params)
 
         response = requests.request(method, **kwargs)
