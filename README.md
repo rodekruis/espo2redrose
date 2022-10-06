@@ -9,6 +9,9 @@ Synopsis: a [dockerized](https://www.docker.com/) [python app](https://www.pytho
 
 Worflow: push new entities from EspoCRM to RedRose.
 
+## WARNING
+Lots of configurations specific to the Slovakia Shelter program are currently hard-coded in the app, needs heavy refactoring to be generalizable.
+
 ## Setup
 Generic requirements:
 - a running EspoCRM instance
