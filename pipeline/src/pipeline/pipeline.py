@@ -70,13 +70,16 @@ def main(verbose):
 
                 # for each payment, copy the amount to redrose
                 for payment in related_entities:
-                    num_payment = payment['numPayment']
-                    if not isinstance(num_payment, int):
-                        try:
-                            num_payment = int(num_payment)
-                        except ValueError:
-                            continue
-                    payload[f'm.shelterPayment{num_payment}'] = payment['amount']
+                    if 'numPayment' in payment.keys():
+                        num_payment = payment['numPayment']
+                        if not isinstance(num_payment, int):
+                            try:
+                                num_payment = int(num_payment)
+                            except ValueError:
+                                continue
+                        payload[f'm.shelterPayment{num_payment}'] = payment['amount']
+                    else:
+                        print(f"ERROR: payment number not specified !!!")
 
                 # get active payment, i.e. earliest payment which is planned
                 related_entities_dated = []
