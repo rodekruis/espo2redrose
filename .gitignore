@@ -130,3 +130,10 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+pipeline/IndividualTopup-b15c65a0-38de-4eea-9f0e-447d5c7a4be1.xlsx
+pipeline/src/pipeline/rr_api.py
+pipeline/testupload.xlsx
+pipeline/src/pipeline/rruploadtest.py
+pipeline/src/pipeline/pipeline.py
+pipeline/src/pipeline/pipeline.py
+pipeline/src/pipeline/pipeline.py

@@ -21,7 +21,7 @@ def main(verbose):
         print(f'setting up APIs')
         print(f'from EspoCRM: {os.getenv("ESPOURL")}')
         print(f'to RedRose: {os.getenv("RRURL")}')
-    df_map = pd.read_csv('../data/esporedrosemapping.csv')
+    df_map = pd.read_csv('../data/esporedrosemapping.csv')  ##this file is not included in the repo
     espo_client = EspoAPI(os.getenv("ESPOURL"), os.getenv("ESPOAPIKEY"))
     redrose_client = RedRoseAPI(os.getenv("RRURL"), os.getenv("RRAPIUSER"), os.getenv("RRAPIKEY"),
                                 os.getenv("RRMODULE"))
@@ -50,13 +50,13 @@ def main(verbose):
                 if payload['m.surname'] is not None:
                     payload['m.name'] = payload['m.name'] + " " + payload['m.surname']
                 payload.pop('m.surname')
-            payload['gh[0]'] = 'Slovak Red Cross - Shelter'  ## WARNING HARD-CODED
-            payload['gh[1]'] = 'Slovak Red Cross - Shelter, Slovakia'
+            payload['gh[0]'] = 'Slovak Red Cross - Shelter'  ## WARNING HARD-CODED --> We will have to put in espoCRM
+            payload['gh[1]'] = 'Slovak Red Cross - Shelter, Slovakia' ## WARNING HARD-CODED --> We will have to put in espoCRM
 
             if entity['status'] == 'Payments approved and send to RedRose':
                 payload['m.beneficiaryStatus'] = 'Approved'
             elif entity['status'] == 'Rejected':
-                payload['m.beneficiaryStatus'] = 'Rejected'
+                payload['m.beneficiaryStatus'] = 'Rejected'  ##We dont have to push to redrose if rejected
             else:
                 continue
 

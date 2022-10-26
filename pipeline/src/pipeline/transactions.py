@@ -2,17 +2,22 @@
 """
 Create topup request
 """
+from distutils.command.upload import upload
 import pandas as pd
 from espo_api_client import EspoAPI
-from redrose_api_client import RedRoseAPI, RedRoseAPIError
-import rr_api
+#from redrose_api_client import RedRoseAPI, RedRoseAPIError
+from rr_api import RRApi
 import os
 from dotenv import load_dotenv
 import click
+from datetime import datetime
 load_dotenv(dotenv_path="../credentials/.env")
 
 # Create a client to EspoCRM
 espo_client = EspoAPI(os.getenv("ESPOURL"), os.getenv("ESPOAPIKEY"))
+
+# Create a client to RedRose
+redrose_client = RRApi(os.getenv("HOSTNAME"), os.getenv("RRAPIUSER"), os.getenv("RRAPIKEY"))
 
 # Setting query parameters for API request
 params = {
@@ -24,7 +29,7 @@ params = {
                 {
                     "type": "equals",
                     "attribute": "status",
-                    "value": "readyforpayment"
+                    "value": "done"
                 },
                 {
                     "type": "or",
@@ -59,8 +64,19 @@ while x < len(dfs):
     activityId = dfs[x].iloc[0]['rrActivity']
     activity.to_excel(f"IndividualTopup-{activityId}.xlsx", index=False)
 
+
+
     #Upload to RedRose and print output
-    upload_result_id = rr_api.upload_individual_distribution_excel(f"IndividualTopup-{activityId}.xlsx", 'xlsx/' + f"IndividualTopup-{activityId}.xlsx", activity['activityId'])
-    upload_result = rr_api.get_excel_import_status(upload_result_id)
+    print(f"IndividualTopup-{activityId}.xlsx")
+    filename = f"IndividualTopup-{activityId}.xlsx"
+    filepath = f"C:/Users/TZiere/Git/espo2redrose/pipeline/IndividualTopup-{activityId}.xlsx"
+    #activityId = 'ce2dff1e-0103-45f0-81f9-6fede2f75683' #for testing purposes
+    upload_result_id = redrose_client.upload_individual_distribution_excel(filename, filepath, activityId)
+    upload_result = redrose_client.get_excel_import_status(upload_result_id)
     print(datetime.now(), upload_result)
+
+    while upload_result['status'] not in ['SUCCEEDED', 'FAILED']:
+        upload_result = redrose_client.get_excel_import_status(upload_result_id)
+        print(datetime.now(), upload_result)
+
     x += 1
