@@ -4,12 +4,20 @@ Connector between EspoCRM and RedRose
 """
 import pandas as pd
 from pipeline.espo_api_client import EspoAPI
-from pipeline.redrose_api_client import RedRoseAPI, RedRoseAPIError
+from pipeline.redrose_api_client import RedRoseAPI, RedRosePaymentsAPI, RedRoseAPIError
 import os
 import requests
+from datetime import datetime
 from dotenv import load_dotenv
 import click
 load_dotenv(dotenv_path="../credentials/.env")
+
+
+def update_redrose_id(rr_data, entity_name, entity, espo_client):
+    if 'm' in rr_data.keys():
+        if 'id' in rr_data['m'].keys():
+            espo_client.request('PUT', f"{entity_name}/{entity['id']}",
+                                {"redroseInternalID": f"{rr_data['m']['id']}"})
 
 
 @click.command()
@@ -25,13 +33,16 @@ def main(verbose):
     espo_client = EspoAPI(os.getenv("ESPOURL"), os.getenv("ESPOAPIKEY"))
     redrose_client = RedRoseAPI(os.getenv("RRURL"), os.getenv("RRAPIUSER"), os.getenv("RRAPIKEY"),
                                 os.getenv("RRMODULE"))
-    # get all RedRose transactions
-    transactions = redrose_client.request('GET', 'getTransactions')
-    # get all EspoCRM payments
-    payments = espo_client.request('GET', "Payment")['list']
-    payments_redroseids = [p['redRoseTransactionID'] for p in payments]
+    redrose_pay_client = RedRosePaymentsAPI(host_name=os.getenv("RRURL").replace("https://", ""),
+                                            user_name=os.getenv("RRAPIUSER"),
+                                            password=os.getenv("RRAPIKEY"))
 
-    for entity_name in df_map.espoentity.unique():
+    # create beneficiaries
+    df_map_bnf = df_map[df_map['action'] == 'Create bnf']
+
+    for entity_name in df_map_bnf['espo.entity'].unique():
+
+        df_map_ = df_map_bnf[df_map_bnf['espo.entity'] == entity_name]
 
         # get approved entities from EspoCRM
         entity_list = espo_client.request('GET', entity_name)['list']
@@ -40,85 +51,83 @@ def main(verbose):
 
             # prepare payload for RedRose
             payload = {}
-            for ix, row in df_map.iterrows():
-                if row['espofield'] in entity.keys():
-                    payload[row['rrfield']] = str(entity[row['espofield']])
+            for ix, row in df_map_.iterrows():
+                if row['espo.field'] in entity.keys():
+                    payload[row['redrose.field']] = str(entity[row['espo.field']])
                 else:
-                    print(f"ERROR: field {row['espofield']} not found in EspoCRM !!!")
-
-            if 'm.name' and 'm.surname' in payload.keys():
-                if payload['m.surname'] is not None:
-                    payload['m.name'] = payload['m.name'] + " " + payload['m.surname']
-                payload.pop('m.surname')
-            payload['gh[0]'] = 'Slovak Red Cross - Shelter'  ## WARNING HARD-CODED
-            payload['gh[1]'] = 'Slovak Red Cross - Shelter, Slovakia'
-
-            if entity['status'] == 'Payments approved and send to RedRose':
-                payload['m.beneficiaryStatus'] = 'Approved'
-            elif entity['status'] == 'Rejected':
-                payload['m.beneficiaryStatus'] = 'Rejected'
-            else:
-                continue
-
-            # get related entities (payments)
-            related_entities = espo_client.request('GET', f"{entity_name}/{entity['id']}/payments")['list']
-            if verbose:
-                print(f'related_entities: {related_entities}')
-            if len(related_entities) > 0:
-
-                # for each payment, copy the amount to redrose
-                for payment in related_entities:
-                    if 'numPayment' in payment.keys():
-                        num_payment = payment['numPayment']
-                        if not isinstance(num_payment, int):
-                            try:
-                                num_payment = int(num_payment)
-                            except ValueError:
-                                continue
-                        payload[f'm.shelterPayment{num_payment}'] = payment['amount']
-                    else:
-                        print(f"ERROR: payment number not specified !!!")
-
-                # get active payment, i.e. earliest payment which is planned
-                related_entities_dated = []
-                for e in related_entities:
-                    if pd.to_datetime(e['date']) is not None:
-                        e['date'] = pd.to_datetime(e['date']).date()
-                        related_entities_dated.append(e)
-                related_entities_dated = sorted(related_entities_dated, key=lambda d: d['date'])
-                planned_payments = [e for e in related_entities_dated if e['status'] == 'Planned']
-                active_payment = next((e for e in planned_payments), None)
-
-                # copy latest transaction status to active payment status
-                transactions_beneficiary = [t for t in transactions if t['iqId'] == payload['m.iqId']]
-                # filter out all transactions already copied to EspoCRM
-                transactions_beneficiary = [t for t in transactions_beneficiary if t['id'] not in payments_redroseids]
-                if len(transactions_beneficiary) > 0:
-                    for e in transactions_beneficiary:
-                        e['dated'] = pd.to_datetime(e['dated']).date()
-                    transactions_beneficiary = sorted(transactions_beneficiary, key=lambda d: d['date'])
-                    latest_transaction = transactions_beneficiary[-1]
-                    if 'success' in latest_transaction['status'].lower():
-                        espo_client.request('PUT', f'Payment/{active_payment["id"]}',
-                                            {"status": "Done", "redRoseTransactionID": latest_transaction['id']})
-                    if 'failed' in latest_transaction['status'].lower() or 'reverted' in latest_transaction['status'].lower():
-                        espo_client.request('PUT', f'Payment/{active_payment["id"]}',
-                                            {"status": "Failed", "redRoseTransactionID": latest_transaction['id']})
+                    print(f"ERROR: field {row['espo.field']} not found in EspoCRM !!!")
 
             # post data to RedRose
             if verbose:
                 print(f'payload: {payload}')
-            try:
-                redrose_client.request('POST', 'importBeneficiaryWithIqId', files=payload)
-            except RedRoseAPIError as e:
+            try:  # first try to create new beneficiary
+                rr_data = redrose_client.request('POST', 'importBeneficiaryWithIqId', files=payload)
+                update_redrose_id(rr_data, entity_name, entity, espo_client)
+            except RedRoseAPIError as e:  # if beneficiary already exists, update it
                 try:
                     params = {'beneficiaryIqId': payload['m.iqId']}
                     redrose_client.request('POST', 'updateBeneficiaryByIqId', params=params, files=payload)
                 except RedRoseAPIError as e:
-                    print('\n')
                     print('update failed!')
                     print(payload)
                     continue
+
+    # create top-up requests
+    df_map_pay = df_map[df_map['action'] == 'Create topup']
+
+    # select approved payments which are due today or in the past
+    params = {
+        "select": "internalId,amount,rrActivity",
+        "where": [
+            {
+                "type": "and",
+                "value": [
+                    {
+                        "type": "equals",
+                        "attribute": "status",
+                        "value": "readyforpayment"
+                    },
+                    {
+                        "type": "or",
+                        "value": [
+                            {
+                                "type": "today",
+                                "attribute": "date"
+                            },
+                            {
+                                "type": "past",
+                                "attribute": "date"
+                            }
+                        ]
+                    }
+                ]
+            }
+        ]
+    }
+    payment_data = espo_client.request('GET', 'Payment', params)['list']
+
+    # create a top-up request for each activity
+    df_espo_pay = pd.DataFrame(payment_data)
+    if len(df_espo_pay) > 0:
+        df_espo_pay = df_espo_pay[df_map_pay['espo.field'].unique()]  # keep only relevant fields
+        topup_files = {}
+        for activity in df_espo_pay['rrActivity'].unique():
+            df_espo_pay_activity = df_espo_pay[df_espo_pay['rrActivity'] == activity]
+            topup_file = f"../data/IndividualTopup-{activity}.xlsx"
+            df_espo_pay_activity.drop(columns=['rrActivity']).to_excel(topup_file, index=False)
+            topup_files[activity] = topup_file
+
+        # upload each top-up request to RedRose and print output
+        for activity, topup_file in topup_files.items():
+            upload_result_id = redrose_pay_client.upload_individual_distribution_excel(
+                filename=os.path.basename(topup_file),
+                file_path=topup_file,
+                activity_id=activity)
+            upload_result = redrose_pay_client.get_excel_import_status(upload_result_id)
+            print(datetime.now(), upload_result)
+            while upload_result['status'] not in ['SUCCEEDED', 'FAILED']:
+                upload_result = redrose_pay_client.get_excel_import_status(upload_result_id)
+                print(datetime.now(), upload_result)
 
 
 if __name__ == "__main__":
