@@ -37,7 +37,10 @@ def main(verbose):
                                             user_name=os.getenv("RRAPIUSER"),
                                             password=os.getenv("RRAPIKEY"))
 
-    # create beneficiaries
+    ####################################################################################################################
+
+    # 1. Create beneficiaries in RedRose
+
     df_map_bnf = df_map[df_map['action'] == 'Create bnf']
 
     for entity_name in df_map_bnf['espo.entity'].unique():
@@ -57,9 +60,13 @@ def main(verbose):
                 else:
                     print(f"ERROR: field {row['espo.field']} not found in EspoCRM !!!")
 
+            # mark all beneficiaries as approved
+            payload['m.beneficiaryStatus'] = 'Approved'
+
             # post data to RedRose
             if verbose:
                 print(f'payload: {payload}')
+
             try:  # first try to create new beneficiary
                 rr_data = redrose_client.request('POST', 'importBeneficiaryWithIqId', files=payload)
                 update_redrose_id(rr_data, entity_name, entity, espo_client)
@@ -72,7 +79,10 @@ def main(verbose):
                     print(payload)
                     continue
 
-    # create top-up requests
+    ####################################################################################################################
+
+    # 2. Create top-up request(s) in RedRose
+
     df_map_pay = df_map[df_map['action'] == 'Create topup']
 
     # select approved payments which are due today or in the past
@@ -128,6 +138,64 @@ def main(verbose):
             while upload_result['status'] not in ['SUCCEEDED', 'FAILED']:
                 upload_result = redrose_pay_client.get_excel_import_status(upload_result_id)
                 print(datetime.now(), upload_result)
+
+            # if top-up request succeeded update payment status to "Pending", if failed to "Failed"
+            for payment in payment_data:
+                if upload_result['status'] == 'SUCCEEDED':
+                    espo_client.request('PUT', f"Payment/{payment['id']}", {"status": "Pending"})
+                elif upload_result['status'] == 'FAILED':
+                    espo_client.request('PUT', f"Payment/{payment['id']}", {"status": "Failed"})
+
+    ####################################################################################################################
+
+    # 3. Update payment status in EspoCRM
+
+    # get all transactions
+    transactions = redrose_client.request('GET', 'getTransactions')
+    # parse date
+    for t in transactions:
+        t['date'] = pd.to_datetime(t['dated']).strftime("%Y-%m-%d")
+    multiple_payments, missing_payments = [], []
+    is_multiple_transaction, is_missing_transaction = False, False
+
+    # for each espo payment
+    espo_payments = espo_client.request('GET', 'Payment')['list']
+    for espo_payment in espo_payments:
+        if espo_payment["status"] == "readyforpayment" or espo_payment["status"] == "Planned":
+            continue
+        shelter_id = espo_payment['shelterID']
+        date = espo_payment['date']
+        # get transactions for same beneficiary on same date
+        transactions_filtered = [t for t in transactions if t['iqId'] == shelter_id]
+        transactions_filtered_days = []
+        for t in transactions_filtered:
+            datetime_diff = pd.to_datetime(t['date']) - pd.to_datetime(date)
+            datetime_diff_days = datetime_diff.days
+            if 0 < datetime_diff_days < 8:
+                transactions_filtered_days.append(t)
+
+        # if God is merciful, there is ONE transaction corresponding to ONE payment
+        if len(transactions_filtered_days) == 1:
+            transaction = transactions_filtered_days[0]
+            if 'approved' in transaction['salesStatus'].lower():
+                espo_client.request('PUT', f'Payment/{espo_payment["id"]}',
+                                    {"status": "Done", "transactionID": transaction['id']})
+            if 'cancelled' in transaction['salesStatus'].lower():
+                espo_client.request('PUT', f'Payment/{espo_payment["id"]}',
+                                    {"status": "Failed", "transactionID": transaction['id']})
+        # if God is cruel, there are MULTIPLE transactions corresponding to ONE payment, or NO transactions at all
+        elif len(transactions_filtered_days) > 1:
+            multiple_payments += [t["id"] for t in transactions_filtered_days]
+            is_multiple_transaction = True
+        else:
+            missing_payments += [espo_payment["id"]]
+            is_missing_transaction = True
+
+    if is_missing_transaction:
+        raise ValueError(f'Failed to update payments: no transactions found for payments {missing_payments}')
+    if is_multiple_transaction:
+        raise ValueError(
+            f'Failed to update payments: multiple transactions found for payments {multiple_payments}')
 
 
 if __name__ == "__main__":
