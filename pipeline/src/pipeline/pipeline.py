@@ -5,11 +5,17 @@ Connector between EspoCRM and RedRose
 import pandas as pd
 from pipeline.espo_api_client import EspoAPI
 from pipeline.redrose_api_client import RedRoseAPI, RedRosePaymentsAPI, RedRoseAPIError
+from sendgrid import SendGridAPIClient
+from sendgrid.helpers.mail import Mail, To, Attachment, FileContent, FileName, FileType, Disposition
+import base64
 import os
-import requests
-from datetime import datetime
+import sys
+import json
+from unidecode import unidecode
 from dotenv import load_dotenv
 import click
+import logging
+logging.basicConfig(stream=sys.stdout, level=logging.INFO)
 load_dotenv(dotenv_path="../credentials/.env")
 
 
@@ -20,15 +26,24 @@ def update_redrose_id(rr_data, entity_name, entity, espo_client):
                                 {"redroseInternalID": f"{rr_data['m']['id']}"})
 
 
+def make_hyperlink(espo_url, value):
+    url = f"{espo_url}/#Shelter/view/"+"{}"
+    linkname = "Link to profile"
+    return '=HYPERLINK("%s", "%s")' % (url.format(value), linkname)
+    # url = f"{espo_url}/#Shelter/view/{{{value}}}"
+    # linkname = "Link to profile"
+    # return f'=HYPERLINK("{url}", "{linkname}")'
+
+
 @click.command()
 @click.option('--verbose', '-v', is_flag=True, default=False, help="Print more output.")
 def main(verbose):
 
     # Setup APIs
     if verbose:
-        print(f'setting up APIs')
-        print(f'from EspoCRM: {os.getenv("ESPOURL")}')
-        print(f'to RedRose: {os.getenv("RRURL")}')
+        logging.info(f'setting up APIs')
+        logging.info(f'from EspoCRM: {os.getenv("ESPOURL")}')
+        logging.info(f'to RedRose: {os.getenv("RRURL")}')
     df_map = pd.read_csv('../data/esporedrosemapping.csv')
     espo_client = EspoAPI(os.getenv("ESPOURL"), os.getenv("ESPOAPIKEY"))
     redrose_client = RedRoseAPI(os.getenv("RRURL"), os.getenv("RRAPIUSER"), os.getenv("RRAPIKEY"),
@@ -39,7 +54,9 @@ def main(verbose):
 
     ####################################################################################################################
 
-    # 1. Create beneficiaries in RedRose
+    # 1. Create or update beneficiaries in RedRose
+    if verbose:
+        logging.info(f"Step 1: Create or update beneficiaries in RedRose")
 
     df_map_bnf = df_map[df_map['action'] == 'Create bnf']
 
@@ -49,6 +66,8 @@ def main(verbose):
 
         # get approved entities from EspoCRM
         entity_list = espo_client.request('GET', entity_name)['list']
+        if verbose:
+            logging.info(f'updating {len(entity_list)} beneficiaries')
 
         for entity in entity_list:
 
@@ -56,32 +75,38 @@ def main(verbose):
             payload = {}
             for ix, row in df_map_.iterrows():
                 if row['espo.field'] in entity.keys():
-                    payload[row['redrose.field']] = str(entity[row['espo.field']])
+                    payload[row['redrose.field']] = unidecode(str(entity[row['espo.field']]))
                 else:
-                    print(f"ERROR: field {row['espo.field']} not found in EspoCRM !!!")
+                    logging.error(f"ERROR: field {row['espo.field']} not found in EspoCRM !!!")
 
             # mark all beneficiaries as approved
             payload['m.beneficiaryStatus'] = 'Approved'
 
             # post data to RedRose
-            if verbose:
-                print(f'payload: {payload}')
-
-            try:  # first try to create new beneficiary
-                rr_data = redrose_client.request('POST', 'importBeneficiaryWithIqId', files=payload)
+            if pd.isna(entity["redroseInternalID"]):  # create new beneficiary
+                if verbose:
+                    logging.info(f'creating beneficiary: {payload}')
+                try:
+                    rr_data = redrose_client.request('POST', 'importBeneficiaryWithIqId', files=payload)
+                except RedRoseAPIError:
+                    logging.error('create beneficiary failed!')
+                    continue
                 update_redrose_id(rr_data, entity_name, entity, espo_client)
-            except RedRoseAPIError as e:  # if beneficiary already exists, update it
+            else:  # if beneficiary already exists, update it
+                if verbose:
+                    logging.info(f'updating beneficiary: {payload}')
                 try:
                     params = {'beneficiaryIqId': payload['m.iqId']}
                     redrose_client.request('POST', 'updateBeneficiaryByIqId', params=params, files=payload)
-                except RedRoseAPIError as e:
-                    print('update failed!')
-                    print(payload)
+                except RedRoseAPIError:
+                    logging.error('update failed!')
                     continue
 
     ####################################################################################################################
 
     # 2. Create top-up request(s) in RedRose
+    if verbose:
+        logging.info(f"Step 2: Create top-up requests in RedRose")
 
     df_map_pay = df_map[df_map['action'] == 'Create topup']
 
@@ -118,7 +143,10 @@ def main(verbose):
 
     # create a top-up request for each activity
     df_espo_pay = pd.DataFrame(payment_data)
+    is_topup_successful = False
     if len(df_espo_pay) > 0:
+        if verbose:
+            logging.info(f'creating top-up requests for {len(df_espo_pay)} payments')
         df_espo_pay = df_espo_pay[df_map_pay['espo.field'].unique()]  # keep only relevant fields
         topup_files = {}
         for activity in df_espo_pay['rrActivity'].unique():
@@ -134,10 +162,12 @@ def main(verbose):
                 file_path=topup_file,
                 activity_id=activity)
             upload_result = redrose_pay_client.get_excel_import_status(upload_result_id)
-            print(datetime.now(), upload_result)
             while upload_result['status'] not in ['SUCCEEDED', 'FAILED']:
                 upload_result = redrose_pay_client.get_excel_import_status(upload_result_id)
-                print(datetime.now(), upload_result)
+            if upload_result['status'] == 'FAILED':
+                logging.error(f"Top-up request submitted, status FAILED")
+            elif verbose:
+                logging.info(f"Top-up request submitted, status {upload_result['status']}")
 
             # if top-up request succeeded update payment status to "Pending", if failed to "Failed"
             for payment in payment_data:
@@ -145,13 +175,128 @@ def main(verbose):
                     espo_client.request('PUT', f"Payment/{payment['id']}", {"status": "Pending"})
                 elif upload_result['status'] == 'FAILED':
                     espo_client.request('PUT', f"Payment/{payment['id']}", {"status": "Failed"})
+            is_topup_successful = upload_result['status'] == 'SUCCEEDED'
+    else:
+        logging.info("No payments in EspoCRM with status=readyforpayment")
 
     ####################################################################################################################
 
-    # 3. Update payment status in EspoCRM
+    # 3. Create audit file and send it around to if a top-up request was created
+
+    if is_topup_successful:
+        logging.info("Creating audit file")
+        # Create audit file and define function to create excel hyperlinks
+        writer = pd.ExcelWriter('auditfile.xlsx', engine='xlsxwriter')
+
+        # Get due payments and writh to excel
+        paymentsEspo = espo_client.request('GET', "Payment")['list']
+        payments = pd.json_normalize(paymentsEspo)
+        payments = payments.loc[payments['status'] == "Pending"]
+        logging.info(payments)
+        payments = payments.reset_index()
+        paymentsoverview = payments[
+            ['shelterID', 'date', 'amount', 'amountCurrency', 'status', 'numPayment', 'modifiedAt', 'shelterName']]
+
+        # Get associated shelterIds from payments
+        shelterIds = payments.shelterId.unique()
+
+        # Get changes for beneficiaries associated to payments and write to excel
+        paymentchanges = []
+        paymentsto = []
+
+        for id in shelterIds:
+            stream = espo_client.request('GET', f"Shelter/{id}/stream")['list']
+            dfs = pd.read_json(json.dumps(stream))
+            if dfs.empty:
+                pass
+            else:
+                dfs = dfs.loc[dfs['type'] == 'Update']
+                paymentchanges.append(dfs)
+
+            to = espo_client.request('GET', f"Shelter/{id}")
+            dfto = pd.json_normalize(to)
+            if dfto.empty:
+                pass
+            else:
+                paymentsto.append(dfto)
+
+        if paymentchanges == []:
+            paymentchanges = pd.DataFrame(['no payment info was changed by users in this batch'],
+                                          columns=['Paymentchanges'])
+        else:
+            paymentchanges = pd.concat(paymentchanges)
+            paymentchanges['Link'] = paymentchanges['parentId'].apply(lambda x: make_hyperlink(os.getenv("ESPOURL"), x))
+            paymentchanges = paymentchanges[['data', 'createdAt', 'createdByName', 'parentId', 'Link']]
+            paymentchanges.rename(columns={'data': 'Changes'}, inplace=True)
+            paymentchanges.rename(columns={'parentId': 'EspoCRM ID'}, inplace=True)
+
+        if len(paymentsto) > 0:
+            paymentsto = pd.concat(paymentsto)
+
+            paymentsto["Payment to"] = paymentsto["rrName"] + " " + paymentsto["rrSurname"]
+            paymentsto = paymentsto[
+                ['shelterID', 'Payment to', 'contactName', 'id', 'status', 'accType', 'modifiedByName', 'ibanpayment',
+                 'paymentBankName', 'bicPayment', 'gh0', 'gh1']]
+            paymentsto.rename(columns={'id': 'EspoCRM ID'}, inplace=True)
+            paymentsID = paymentsto[['EspoCRM ID', 'shelterID']]
+
+            paymentchanges = pd.merge(paymentchanges, paymentsID, on='EspoCRM ID', how='left')
+            paymentchanges = paymentchanges[['shelterID', 'Changes', 'createdAt', 'createdByName', 'Link']]
+
+            consolidated = pd.merge(paymentsoverview, paymentsto, on='shelterID', how='left')
+            consolidated = consolidated[
+                ['shelterID', 'amount', 'amountCurrency', 'status_x', 'numPayment', 'Payment to', 'contactName', 'status_y',
+                 'accType', 'gh0', 'gh1']]
+            consolidated.rename(
+                columns={'status_x': 'Payment Status', 'status_y': 'Beneficiary Status', 'contactName': 'Beneficiary Name',
+                         'accType': 'Accomodation Type'}, inplace=True)
+
+            # Save audit file
+            consolidated.to_excel(writer, sheet_name='Payment Overview', index=False)
+            paymentchanges.to_excel(writer, sheet_name='Changes', index=False)
+            writer.save()
+
+            logging.info("Sending audit file around")
+            # Send email to claudia, monica, tijs, dante
+            message = Mail(
+                from_email='ukraineresponse@510.global',
+                to_emails=[To('jmargutti@redcross.nl')],
+                #[To('rrcvaim.sims@ifrc.org'), To('monica.shah@ifrc.org'), To('claudia.kelly@ifrc.org'), To('dante.moses@ifrc.org')],
+                subject='Shelter Auditfile',
+                html_content='This is the audit file for the sheltertopup of today')
+
+            data = open('auditfile.xlsx', 'rb').read()
+            encoded_file = base64.b64encode(data).decode('UTF-8')
+
+            attachedFile = Attachment(
+                FileContent(encoded_file),
+                FileName('auditfile.xlsx'),
+                FileType('application/xlsx'),
+                Disposition('attachment')
+            )
+            message.attachment = attachedFile
+
+            try:
+                logging.info(f"SENDGRID_API_KEY {os.getenv('SENDGRID_API_KEY')}")
+                sg = SendGridAPIClient(os.getenv("SENDGRID_API_KEY"))
+                response = sg.send(message)
+                logging.info(response.status_code)
+                logging.info(response.body)
+                logging.info(response.headers)
+            except Exception as e:
+                logging.error(e)
+        else:
+            logging.warning("No payments found for audit file")
+
+    ####################################################################################################################
+
+    # 4. Update payment status in EspoCRM
 
     # get all transactions
     transactions = redrose_client.request('GET', 'getTransactions')
+    if verbose:
+        logging.info(f"Step 3: Update payment status in EspoCRM")
+        logging.info(f"Found {len(transactions)} transactions in RedRose")
     # parse date
     for t in transactions:
         t['date'] = pd.to_datetime(t['dated']).strftime("%Y-%m-%d")
@@ -192,9 +337,9 @@ def main(verbose):
             is_missing_transaction = True
 
     if is_missing_transaction:
-        raise ValueError(f'Failed to update payments: no transactions found for payments {missing_payments}')
+        logging.warning(f'No transactions found for payments {missing_payments}')
     if is_multiple_transaction:
-        raise ValueError(
+        logging.warning(
             f'Failed to update payments: multiple transactions found for payments {multiple_payments}')
 
 
