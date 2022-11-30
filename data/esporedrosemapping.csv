@@ -1,0 +1,13 @@
+action,redrose.field,espo.entity,espo.field
+Create bnf,m.iqId,Shelter,shelterID
+Create bnf,m.name,Shelter,rrName
+Create bnf,m.surname,Shelter,rrSurname
+Create bnf,gh[0],Shelter,gh0
+Create bnf,gh[1],Shelter,gh1
+Create bnf,m.iban,Shelter,iban
+Create bnf,m.bankName,Shelter,paymentBankName
+Create bnf,m.bankSwiftCode,Shelter,bicPayment
+Create bnf,m.notes,Shelter,rrNotes
+Create topup,amount,Payment,amount
+Create topup,internalId,Payment,internalId
+Create topup,activityId,Payment,rrActivity
