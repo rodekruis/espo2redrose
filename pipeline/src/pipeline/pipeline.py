@@ -260,8 +260,7 @@ def main(verbose):
             # Send email to claudia, monica, tijs, dante
             message = Mail(
                 from_email='ukraineresponse@510.global',
-                to_emails=[To('jmargutti@redcross.nl')],
-                #[To('rrcvaim.sims@ifrc.org'), To('monica.shah@ifrc.org'), To('claudia.kelly@ifrc.org'), To('dante.moses@ifrc.org')],
+                to_emails=[To('rrcvaim.sims@ifrc.org'), To('monica.shah@ifrc.org'), To('claudia.kelly@ifrc.org'), To('dante.moses@ifrc.org')],
                 subject='Shelter Auditfile',
                 html_content='This is the audit file for the sheltertopup of today')
 
