@@ -195,7 +195,7 @@ def main(verbose):
         logging.info(payments)
         payments = payments.reset_index()
         paymentsoverview = payments[
-            ['shelterID', 'date', 'amount', 'amountCurrency', 'status', 'numPayment', 'modifiedAt', 'shelterName']]
+            ['shelterID', 'date', 'amount', 'amountCurrency', 'status', 'numPayment', 'modifiedAt', 'shelterName', 'numberOfPayments']]
 
         # Get associated shelterIds from payments
         shelterIds = payments.shelterId.unique()
@@ -245,7 +245,7 @@ def main(verbose):
 
             consolidated = pd.merge(paymentsoverview, paymentsto, on='shelterID', how='left')
             consolidated = consolidated[
-                ['shelterID', 'amount', 'amountCurrency', 'status_x', 'numPayment', 'Payment to', 'contactName', 'status_y',
+                ['shelterID', 'amount', 'amountCurrency', 'status_x', 'numPayment', 'numberOfPayments', 'Payment to', 'contactName', 'status_y',
                  'accType', 'gh0', 'gh1']]
             consolidated.rename(
                 columns={'status_x': 'Payment Status', 'status_y': 'Beneficiary Status', 'contactName': 'Beneficiary Name',
