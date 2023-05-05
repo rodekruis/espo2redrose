@@ -15,9 +15,21 @@ from unidecode import unidecode
 from dotenv import load_dotenv
 import click
 import logging
-logging.basicConfig(stream=sys.stdout, level=logging.INFO)
-load_dotenv(dotenv_path="../credentials/.env")
 
+logger = logging.getLogger()
+logger.setLevel(logging.DEBUG)
+handler = logging.StreamHandler(sys.stdout)
+handler.setLevel(logging.INFO)
+formatter = logging.Formatter("%(asctime)s : %(levelname)s : %(message)s")
+handler.setFormatter(formatter)
+logger.addHandler(handler)
+logging.getLogger("requests").setLevel(logging.WARNING)
+logging.getLogger("urllib3").setLevel(logging.WARNING)
+logging.getLogger("azure").setLevel(logging.WARNING)
+logging.getLogger("requests_oauthlib").setLevel(logging.WARNING)
+
+load_dotenv(dotenv_path="../credentials/.env")
+MAX_NUMBER_PAYMENTS=40
 
 def update_redrose_id(rr_data, entity_name, entity, espo_client):
     if 'm' in rr_data.keys():
@@ -30,9 +42,6 @@ def make_hyperlink(espo_url, value):
     url = f"{espo_url}/#Shelter/view/"+"{}"
     linkname = "Link to profile"
     return '=HYPERLINK("%s", "%s")' % (url.format(value), linkname)
-    # url = f"{espo_url}/#Shelter/view/{{{value}}}"
-    # linkname = "Link to profile"
-    # return f'=HYPERLINK("{url}", "{linkname}")'
 
 
 @click.command()
@@ -114,32 +123,14 @@ def main(beneficiaries, topup, verbose):
 
         df_map_pay = df_map[df_map['action'] == 'Create topup']
 
-        # select approved payments which are due today or in the past
+        # select approved payments
         params = {
             "select": "internalId,amount,rrActivity",
             "where": [
                 {
-                    "type": "and",
-                    "value": [
-                        {
-                            "type": "equals",
-                            "attribute": "status",
-                            "value": "readyforpayment"
-                        },
-                        {
-                            "type": "or",
-                            "value": [
-                                {
-                                    "type": "today",
-                                    "attribute": "date"
-                                },
-                                {
-                                    "type": "past",
-                                    "attribute": "date"
-                                }
-                            ]
-                        }
-                    ]
+                    "type": "equals",
+                    "attribute": "status",
+                    "value": "readyforpayment"
                 }
             ]
         }
@@ -147,59 +138,70 @@ def main(beneficiaries, topup, verbose):
 
         # create a top-up request for each activity
         df_espo_pay = pd.DataFrame(payment_data)
-        is_topup_successful = False
         if len(df_espo_pay) > 0:
             if verbose:
                 logging.info(f'creating top-up requests for {len(df_espo_pay)} payments')
             df_espo_pay = df_espo_pay[df_map_pay['espo.field'].unique()]  # keep only relevant fields
             topup_files = {}
             for activity in df_espo_pay['rrActivity'].unique():
+                topup_files[activity] = []
                 df_espo_pay_activity = df_espo_pay[df_espo_pay['rrActivity'] == activity]
-                topup_file = f"../data/IndividualTopup-{activity}.xlsx"
-                df_espo_pay_activity.drop(columns=['rrActivity']).to_excel(topup_file, index=False)
-                topup_files[activity] = topup_file
+                # if more than MAX_NUMBER_PAYMENTS, split and create multiple topup requests
+                if len(df_espo_pay_activity) > MAX_NUMBER_PAYMENTS:
+                    list_df = [df_espo_pay_activity[i:i + MAX_NUMBER_PAYMENTS].copy()
+                               for i in range(0, len(df_espo_pay_activity), MAX_NUMBER_PAYMENTS)]
+                    for ndf, df in enumerate(list_df):
+                        topup_file = f"../data/IndividualTopup-{activity}-{ndf}.xlsx"
+                        df.drop(columns=['rrActivity']).to_excel(topup_file, index=False)
+                        topup_files[activity].append(topup_file)
+                else:
+                    topup_file = f"../data/IndividualTopup-{activity}.xlsx"
+                    df_espo_pay_activity.drop(columns=['rrActivity']).to_excel(topup_file, index=False)
+                    topup_files[activity].append(topup_file)
 
             # upload each top-up request to RedRose and print output
-            for activity, topup_file in topup_files.items():
-                upload_result_id = redrose_pay_client.upload_individual_distribution_excel(
-                    filename=os.path.basename(topup_file),
-                    file_path=topup_file,
-                    activity_id=activity)
-                upload_result = redrose_pay_client.get_excel_import_status(upload_result_id)
-                while upload_result['status'] not in ['SUCCEEDED', 'FAILED']:
+            for activity, topup_file_list in topup_files.items():
+                for topup_file in topup_file_list:
+                    upload_result_id = redrose_pay_client.upload_individual_distribution_excel(
+                        filename=os.path.basename(topup_file),
+                        file_path=topup_file,
+                        activity_id=activity)
                     upload_result = redrose_pay_client.get_excel_import_status(upload_result_id)
-                if upload_result['status'] == 'FAILED':
-                    logging.error(f"Top-up request submitted, status FAILED")
-                elif verbose:
-                    logging.info(f"Top-up request submitted, status {upload_result['status']}")
+                    while upload_result['status'] not in ['SUCCEEDED', 'FAILED']:
+                        upload_result = redrose_pay_client.get_excel_import_status(upload_result_id)
+                    if upload_result['status'] == 'FAILED':
+                        logging.error(f"Top-up request submitted, status FAILED")
+                    elif verbose:
+                        logging.info(f"Top-up request submitted, status {upload_result['status']}")
 
-                # if top-up request succeeded update payment status to "Pending", if failed to "Failed"
-                for payment in payment_data:
-                    if upload_result['status'] == 'SUCCEEDED':
-                        espo_client.request('PUT', f"Payment/{payment['id']}", {"status": "Pending"})
-                    elif upload_result['status'] == 'FAILED':
-                        espo_client.request('PUT', f"Payment/{payment['id']}", {"status": "Failed"})
-                is_topup_successful = upload_result['status'] == 'SUCCEEDED'
+                    # if top-up request succeeded update payments status to "Pending", if failed to "Failed"
+                    payment_ids = pd.read_excel(topup_file)['id'].unique()
+                    for payment_id in payment_ids:
+                        if upload_result['status'] == 'SUCCEEDED':
+                            espo_client.request('PUT', f"Payment/{payment_id}", {"status": "Pending"})
+                        elif upload_result['status'] == 'FAILED':
+                            espo_client.request('PUT', f"Payment/{payment_id}", {"status": "Failed"})
         else:
             logging.info("No payments in EspoCRM with status=readyforpayment")
 
-        ####################################################################################################################
+        ################################################################################################################
 
-        # 3. Create audit file and send it around to if a top-up request was created
-
-        if is_topup_successful:
+        # 3. Create audit file and send it around if a top-up request was created
+        if len(df_espo_pay) > 0:
             logging.info("Creating audit file")
             # Create audit file and define function to create excel hyperlinks
             writer = pd.ExcelWriter('auditfile.xlsx', engine='xlsxwriter')
 
-            # Get due payments and writh to excel
+            # Get due payments and write to excel
             paymentsEspo = espo_client.request('GET', "Payment")['list']
             payments = pd.json_normalize(paymentsEspo)
             payments = payments.loc[payments['status'] == "Pending"]
             logging.info(payments)
             payments = payments.reset_index()
-            paymentsoverview = payments[
-                ['shelterID', 'date', 'amount', 'amountCurrency', 'status', 'numPayment', 'modifiedAt', 'shelterName','numberOfPayments']]
+            paymentsoverview = payments[[
+                    'shelterID', 'date', 'amount', 'amountCurrency', 'status', 'numPayment', 'modifiedAt',
+                    'shelterName', 'numberOfPayments'
+                ]]
 
             # Get associated shelterIds from payments
             shelterIds = payments.shelterId.unique()
@@ -229,7 +231,8 @@ def main(beneficiaries, topup, verbose):
                                               columns=['Paymentchanges'])
             else:
                 paymentchanges = pd.concat(paymentchanges)
-                paymentchanges['Link'] = paymentchanges['parentId'].apply(lambda x: make_hyperlink(os.getenv("ESPOURL"), x))
+                paymentchanges['Link'] = paymentchanges['parentId'].apply(
+                    lambda x: make_hyperlink(os.getenv("ESPOURL"), x))
                 paymentchanges = paymentchanges[['data', 'createdAt', 'createdByName', 'parentId', 'Link']]
                 paymentchanges.rename(columns={'data': 'Changes'}, inplace=True)
                 paymentchanges.rename(columns={'parentId': 'EspoCRM ID'}, inplace=True)
@@ -238,9 +241,10 @@ def main(beneficiaries, topup, verbose):
                 paymentsto = pd.concat(paymentsto)
 
                 paymentsto["Payment to"] = paymentsto["rrName"] + " " + paymentsto["rrSurname"]
-                paymentsto = paymentsto[
-                    ['shelterID', 'Payment to', 'contactName', 'id', 'status', 'accType', 'modifiedByName', 'ibanpayment',
-                     'paymentBankName', 'bicPayment', 'gh0', 'gh1']]
+                paymentsto = paymentsto[[
+                    'shelterID', 'Payment to', 'contactName', 'id', 'status', 'accType', 'modifiedByName',
+                    'ibanpayment', 'paymentBankName', 'bicPayment', 'gh0', 'gh1'
+                ]]
                 paymentsto.rename(columns={'id': 'EspoCRM ID'}, inplace=True)
                 paymentsID = paymentsto[['EspoCRM ID', 'shelterID']]
 
@@ -248,12 +252,16 @@ def main(beneficiaries, topup, verbose):
                 paymentchanges = paymentchanges[['shelterID', 'Changes', 'createdAt', 'createdByName', 'Link']]
 
                 consolidated = pd.merge(paymentsoverview, paymentsto, on='shelterID', how='left')
-                consolidated = consolidated[
-                    ['shelterID', 'amount', 'amountCurrency', 'status_x', 'numPayment','numberOfPayments', 'Payment to', 'contactName', 'status_y',
-                     'accType', 'gh0', 'gh1']]
+                consolidated = consolidated[[
+                    'shelterID', 'amount', 'amountCurrency', 'status_x', 'numPayment','numberOfPayments', 'Payment to',
+                    'contactName', 'status_y', 'accType', 'gh0', 'gh1'
+                ]]
                 consolidated.rename(
-                    columns={'status_x': 'Payment Status', 'status_y': 'Beneficiary Status', 'contactName': 'Beneficiary Name',
-                             'accType': 'Accomodation Type'}, inplace=True)
+                    columns={'status_x': 'Payment Status',
+                             'status_y': 'Beneficiary Status',
+                             'contactName': 'Beneficiary Name',
+                             'accType': 'Accomodation Type'},
+                    inplace=True)
 
                 # Save audit file
                 consolidated.to_excel(writer, sheet_name='Payment Overview', index=False)
@@ -264,7 +272,8 @@ def main(beneficiaries, topup, verbose):
                 # Send email to claudia, monica, tijs, dante
                 message = Mail(
                     from_email='ukraineresponse@510.global',
-                    to_emails=[To('rrcvaim.sims@ifrc.org'), To('monica.shah@ifrc.org'), To('claudia.kelly@ifrc.org'), To('dante.moses@ifrc.org')],
+                    to_emails=[To('rrcvaim.sims@ifrc.org'), To('monica.shah@ifrc.org'), To('claudia.kelly@ifrc.org'),
+                               To('dante.moses@ifrc.org')],
                     subject='Shelter Auditfile',
                     html_content='This is the audit file for the sheltertopup of today')
 
@@ -291,7 +300,7 @@ def main(beneficiaries, topup, verbose):
             else:
                 logging.warning("No payments found for audit file")
 
-        ####################################################################################################################
+        ################################################################################################################
 
         # 4. Update payment status in EspoCRM
 
