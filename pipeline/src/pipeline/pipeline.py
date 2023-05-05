@@ -125,7 +125,7 @@ def main(beneficiaries, topup, verbose):
 
         # select approved payments
         params = {
-            "select": "internalId,amount,rrActivity",
+            "select": "id,internalId,amount,rrActivity",
             "where": [
                 {
                     "type": "equals",
@@ -141,10 +141,10 @@ def main(beneficiaries, topup, verbose):
         if len(df_espo_pay) > 0:
             if verbose:
                 logging.info(f'creating top-up requests for {len(df_espo_pay)} payments')
-            df_espo_pay = df_espo_pay[df_map_pay['espo.field'].unique()]  # keep only relevant fields
-            topup_files = {}
+            df_espo_pay = df_espo_pay[['id']+list(df_map_pay['espo.field'].unique())]  # keep only relevant fields
+            topup_files, topup_payment_ids = {}, {}
             for activity in df_espo_pay['rrActivity'].unique():
-                topup_files[activity] = []
+                topup_files[activity], topup_payment_ids[activity] = [], []
                 df_espo_pay_activity = df_espo_pay[df_espo_pay['rrActivity'] == activity]
                 # if more than MAX_NUMBER_PAYMENTS, split and create multiple topup requests
                 if len(df_espo_pay_activity) > MAX_NUMBER_PAYMENTS:
@@ -152,16 +152,18 @@ def main(beneficiaries, topup, verbose):
                                for i in range(0, len(df_espo_pay_activity), MAX_NUMBER_PAYMENTS)]
                     for ndf, df in enumerate(list_df):
                         topup_file = f"../data/IndividualTopup-{activity}-{ndf}.xlsx"
-                        df.drop(columns=['rrActivity']).to_excel(topup_file, index=False)
+                        df.drop(columns=['id', 'rrActivity']).to_excel(topup_file, index=False)
                         topup_files[activity].append(topup_file)
+                        topup_payment_ids[activity].append(list(df['id'].unique()))
                 else:
                     topup_file = f"../data/IndividualTopup-{activity}.xlsx"
-                    df_espo_pay_activity.drop(columns=['rrActivity']).to_excel(topup_file, index=False)
+                    df_espo_pay_activity.drop(columns=['id', 'rrActivity']).to_excel(topup_file, index=False)
                     topup_files[activity].append(topup_file)
+                    topup_payment_ids[activity].append(list(df_espo_pay_activity['id'].unique()))
 
             # upload each top-up request to RedRose and print output
             for activity, topup_file_list in topup_files.items():
-                for topup_file in topup_file_list:
+                for topup_file, payment_ids in zip(topup_file_list, topup_payment_ids[activity]):
                     upload_result_id = redrose_pay_client.upload_individual_distribution_excel(
                         filename=os.path.basename(topup_file),
                         file_path=topup_file,
@@ -174,8 +176,7 @@ def main(beneficiaries, topup, verbose):
                     elif verbose:
                         logging.info(f"Top-up request submitted, status {upload_result['status']}")
 
-                    # if top-up request succeeded update payments status to "Pending", if failed to "Failed"
-                    payment_ids = pd.read_excel(topup_file)['id'].unique()
+                    # if top-up request succeeded update corresponding payments' status
                     for payment_id in payment_ids:
                         if upload_result['status'] == 'SUCCEEDED':
                             espo_client.request('PUT', f"Payment/{payment_id}", {"status": "Pending"})
