@@ -29,7 +29,8 @@ logging.getLogger("azure").setLevel(logging.WARNING)
 logging.getLogger("requests_oauthlib").setLevel(logging.WARNING)
 
 load_dotenv(dotenv_path="../credentials/.env")
-MAX_NUMBER_PAYMENTS=40
+MAX_NUMBER_PAYMENTS = 20
+
 
 def update_redrose_id(rr_data, entity_name, entity, espo_client):
     if 'm' in rr_data.keys():
@@ -164,6 +165,7 @@ def main(beneficiaries, topup, verbose):
             # upload each top-up request to RedRose and print output
             for activity, topup_file_list in topup_files.items():
                 for topup_file, payment_ids in zip(topup_file_list, topup_payment_ids[activity]):
+                    logging.info(f"sending {topup_file.replace('../data/', '')} with {len(payment_ids)} payments")
                     upload_result_id = redrose_pay_client.upload_individual_distribution_excel(
                         filename=os.path.basename(topup_file),
                         file_path=topup_file,
