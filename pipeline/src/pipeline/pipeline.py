@@ -332,7 +332,10 @@ def main(beneficiaries, topup, verbose):
             if espo_payment["status"] == "readyforpayment" or espo_payment["status"] == "Planned":
                 continue
             shelter_id = espo_payment['shelterID']
-            date = espo_payment['date']
+            if not pd.isna(espo_payment['dateTopup']):
+                date = espo_payment['dateTopup']
+            else:
+                date = espo_payment['date']
             # get transactions for same beneficiary on same date
             transactions_filtered = [t for t in transactions if t['iqId'] == shelter_id]
             transactions_filtered_days = []
