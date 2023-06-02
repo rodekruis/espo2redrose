@@ -14,6 +14,7 @@ import json
 from unidecode import unidecode
 from dotenv import load_dotenv
 import click
+from datetime import datetime
 import logging
 
 logger = logging.getLogger()
@@ -29,7 +30,7 @@ logging.getLogger("azure").setLevel(logging.WARNING)
 logging.getLogger("requests_oauthlib").setLevel(logging.WARNING)
 
 load_dotenv(dotenv_path="../credentials/.env")
-MAX_NUMBER_PAYMENTS = 20
+MAX_NUMBER_PAYMENTS = 500
 
 
 def update_redrose_id(rr_data, entity_name, entity, espo_client):
@@ -181,7 +182,10 @@ def main(beneficiaries, topup, verbose):
                     # if top-up request succeeded update corresponding payments' status
                     for payment_id in payment_ids:
                         if upload_result['status'] == 'SUCCEEDED':
-                            espo_client.request('PUT', f"Payment/{payment_id}", {"status": "Pending"})
+                            espo_client.request('PUT', f"Payment/{payment_id}", {
+                                "status": "Pending",
+                                "dateTopup": datetime.today().strftime("%Y-%m-%d")
+                            })
                         elif upload_result['status'] == 'FAILED':
                             espo_client.request('PUT', f"Payment/{payment_id}", {"status": "Failed"})
         else:
@@ -272,34 +276,38 @@ def main(beneficiaries, topup, verbose):
                 writer.save()
 
                 logging.info("Sending audit file around")
-                # Send email to claudia, monica, tijs, dante
-                message = Mail(
-                    from_email='ukraineresponse@510.global',
-                    to_emails=[To('rrcvaim.sims@ifrc.org'), To('monica.shah@ifrc.org'), To('claudia.kelly@ifrc.org'),
-                               To('dante.moses@ifrc.org')],
-                    subject='Shelter Auditfile',
-                    html_content='This is the audit file for the sheltertopup of today')
+                email_from = os.getenv("AUDIT_EMAIL_FROM")
+                email_to1 = os.getenv("AUDIT_EMAIL_TO_1")
+                email_to2 = os.getenv("AUDIT_EMAIL_TO_2")
+                email_to3 = os.getenv("AUDIT_EMAIL_TO_3")
+                # Send emails around
+                if email_from is not None and email_to1 is not None and email_to2 is not None and email_to3 is not None:
+                    message = Mail(
+                        from_email=email_from,
+                        to_emails=[To(email_to1), To(email_to2), To(email_to3)],
+                        subject='Shelter Auditfile',
+                        html_content='This is the audit file for the sheltertopup of today')
 
-                data = open('auditfile.xlsx', 'rb').read()
-                encoded_file = base64.b64encode(data).decode('UTF-8')
+                    data = open('auditfile.xlsx', 'rb').read()
+                    encoded_file = base64.b64encode(data).decode('UTF-8')
 
-                attachedFile = Attachment(
-                    FileContent(encoded_file),
-                    FileName('auditfile.xlsx'),
-                    FileType('application/xlsx'),
-                    Disposition('attachment')
-                )
-                message.attachment = attachedFile
+                    attachedFile = Attachment(
+                        FileContent(encoded_file),
+                        FileName('auditfile.xlsx'),
+                        FileType('application/xlsx'),
+                        Disposition('attachment')
+                    )
+                    message.attachment = attachedFile
 
-                try:
-                    logging.info(f"SENDGRID_API_KEY {os.getenv('SENDGRID_API_KEY')}")
-                    sg = SendGridAPIClient(os.getenv("SENDGRID_API_KEY"))
-                    response = sg.send(message)
-                    logging.info(response.status_code)
-                    logging.info(response.body)
-                    logging.info(response.headers)
-                except Exception as e:
-                    logging.error(e)
+                    try:
+                        logging.info(f"SENDGRID_API_KEY {os.getenv('SENDGRID_API_KEY')}")
+                        sg = SendGridAPIClient(os.getenv("SENDGRID_API_KEY"))
+                        response = sg.send(message)
+                        logging.info(response.status_code)
+                        logging.info(response.body)
+                        logging.info(response.headers)
+                    except Exception as e:
+                        logging.error(e)
             else:
                 logging.warning("No payments found for audit file")
 
