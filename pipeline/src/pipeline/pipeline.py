@@ -280,11 +280,12 @@ def main(beneficiaries, topup, verbose):
                 email_to1 = os.getenv("AUDIT_EMAIL_TO_1")
                 email_to2 = os.getenv("AUDIT_EMAIL_TO_2")
                 email_to3 = os.getenv("AUDIT_EMAIL_TO_3")
+                email_to4 = os.getenv("AUDIT_EMAIL_TO_4")
                 # Send emails around
-                if email_from is not None and email_to1 is not None and email_to2 is not None and email_to3 is not None:
+                if email_from is not None and email_to1 is not None and email_to2 is not None and email_to3 is not None and email_to4 is not None:
                     message = Mail(
                         from_email=email_from,
-                        to_emails=[To(email_to1), To(email_to2), To(email_to3)],
+                        to_emails=[To(email_to1), To(email_to2), To(email_to3), To(email_to4)],
                         subject='Shelter Auditfile',
                         html_content='This is the audit file for the sheltertopup of today')
 
