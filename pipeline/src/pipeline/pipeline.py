@@ -125,14 +125,32 @@ def main(beneficiaries, topup, verbose):
 
         df_map_pay = df_map[df_map['action'] == 'Create topup']
 
-        # select approved payments
+        # select approved payments which are due today or in the past
         params = {
             "select": "id,internalId,amount,rrActivity",
             "where": [
                 {
-                    "type": "equals",
-                    "attribute": "status",
-                    "value": "readyforpayment"
+                    "type": "and",
+                    "value": [
+                        {
+                            "type": "equals",
+                            "attribute": "status",
+                            "value": "readyforpayment"
+                        },
+                        {
+                            "type": "or",
+                            "value": [
+                                {
+                                    "type": "today",
+                                    "attribute": "date"
+                                },
+                                {
+                                    "type": "past",
+                                    "attribute": "date"
+                                }
+                            ]
+                        }
+                    ]
                 }
             ]
         }
