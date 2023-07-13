@@ -268,7 +268,7 @@ def main(beneficiaries, topup, verbose):
                 paymentsto["Payment to"] = paymentsto["rrName"] + " " + paymentsto["rrSurname"]
                 paymentsto = paymentsto[[
                     'shelterID', 'Payment to', 'contactName', 'id', 'status', 'accType', 'modifiedByName',
-                    'ibanpayment', 'paymentBankName', 'bicPayment', 'gh0', 'gh1'
+                    'ibanpayment', 'paymentBankName', 'bicPayment', 'gh0', 'gh1', 'reasonIbanChange'
                 ]]
                 paymentsto.rename(columns={'id': 'EspoCRM ID'}, inplace=True)
                 paymentsID = paymentsto[['EspoCRM ID', 'shelterID']]
@@ -279,7 +279,7 @@ def main(beneficiaries, topup, verbose):
                 consolidated = pd.merge(paymentsoverview, paymentsto, on='shelterID', how='left')
                 consolidated = consolidated[[
                     'shelterID', 'amount', 'amountCurrency', 'status_x', 'numPayment','numberOfPayments', 'Payment to',
-                    'contactName', 'status_y', 'accType', 'gh0', 'gh1'
+                    'contactName', 'status_y', 'accType', 'gh0', 'gh1', 'reasonIbanChange'
                 ]]
                 consolidated.rename(
                     columns={'status_x': 'Payment Status',
